@@ -30,16 +30,21 @@ __global__ void vol2col_gpu_kernel(const int n, const Dtype* data_im,
     const int length, const int height, const int width, const int ksize, const int kdepth, const int pad,
     const int temporal_pad, const int stride, const int temporal_stride, const int length_col, const int height_col, const int width_col,
     Dtype* data_col) {
+    //kernel size : kdepth * ksize * ksize
+    //ouput size : length_col * width_col * height_col
   CUDA_KERNEL_LOOP(index, n) {
+    // w_out,h_out,l_out: 输出的feature map的具体坐标
     int w_out = index % width_col;
     int h_out = (index / width_col ) % height_col;
     int l_out = (index / width_col / height_col) % length_col;
-    int channel_in = index / width_col / height_col / length_col;
+    int channel_in = index / width_col / height_col / length_col;//输出的feature map的哪个channel
     int channel_out = channel_in * kdepth * ksize * ksize;
+    //获取卷积的“左上角”坐标,h_in,w_in,l_in
     int h_in = h_out * stride - pad;
     int w_in = w_out * stride - pad;
     int l_in = l_out * temporal_stride - temporal_pad;
     
+    //将指针定位到输入输出的开始
     data_col += ((channel_out * length_col + l_out) * height_col + h_out) * width_col + w_out;
     data_im += ((channel_in * length + l_in) * height + h_in) * width + w_in;
     for (int k = 0; k < kdepth; ++k) {
@@ -48,8 +53,34 @@ __global__ void vol2col_gpu_kernel(const int n, const Dtype* data_im,
           int l = l_in + k;
           int h = h_in + i;
           int w = w_in + j;
-          *data_col = (l >= 0 && h >= 0 && w >= 0 && h < height && w < width && l < length) ?
-              data_im[(k * height + i) * width + j] : 0;
+
+          //original version: auto-padding with 0
+          // *data_col = (l >= 0 && h >= 0 && w >= 0 && h < height && w < width && l < length) ?
+          //     data_im[(k * height + i) * width + j] : 0;
+          
+          //new version:temporal-padding with nearest value
+          // *data_col = (h >= 0 && w >= 0 && h < height && w < width) ?(
+          //   (l >= 0 && l < length)?data_im[(k * height + i) * width + j]:
+          //   ((l < 0)?data_im[i * width + j]:data_im[((kdepth - 1) * height + i) * width + j])  
+          // ): 0;
+
+          //new version:temporal-padding with nearest value
+          if (h >= 0 && w >= 0 && h < height && w < width) {
+            if (l >= 0 && l < length) {
+              *data_col = data_im[(k * height + i) * width + j];
+            }
+            else if (l < 0) {//out of temporal field
+              *data_col = data_im[i * width + j];
+            }
+            else {//out of temporal field
+              *data_col = data_im[((length - 1) * height + i) * width + j];
+            }
+          }
+          else {//out of spacial field
+            *data_col = 0;
+          }
+
+          //update data_col
           data_col += length_col * height_col * width_col;
         }
       }
